@@ -44,16 +44,23 @@ const (
 	stateReceive
 )
 
-// only once
-func (t *DownloadTask) init() {
+func (t *DownloadTask) initURL() (host, path string) {
 	furl := getFileURL(t.webUrl)
 	if furl == "" {
 		log.Println("任务", t.webUrl, "失败")
 		return
 	}
 
-	var host, path string
 	t.header, host, path = NewHeader(furl)
+	return
+}
+
+// only once
+func (t *DownloadTask) init() {
+	host, path := t.initURL()
+	if path == "" {
+		return
+	}
 	_, filename := filepath.Split(path)
 	var err error
 	t.f, err = os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
@@ -136,20 +143,19 @@ func (t *DownloadTask) init() {
 			if t.ranges == nil {
 				continue
 			}
+			t.SaveStat()
 			if len(t.ranges) == 0 {
 				t.remain = 0
+				t.f.Close()
 				t.stat.Close()
 				os.Remove(t.filename + ".stat")
 				return
 			}
-			t.SaveStat()
 		}
 	}()
 }
 
 func (t *DownloadTask) SaveStat() {
-	l := 0
-	t.stat.Seek(int64(l), 0)
 	var remain uint64
 	buf := bytes.Buffer{}
 	active := 0
@@ -165,9 +171,6 @@ func (t *DownloadTask) SaveStat() {
 		remain += r.end - r.cur
 	}
 	t.Unlock()
-	l += buf.Len()
-	buf.WriteTo(t.stat)
-	t.stat.Truncate(int64(l))
 	b := '\r'
 	if t != curTask {
 		b = ' '
@@ -176,6 +179,13 @@ func (t *DownloadTask) SaveStat() {
 		fmt.Printf("%s/%s %s/s #%d  %c", formatSize(t.length-remain), formatSize(t.length), formatSize((t.remain-remain)/2), active, b)
 	}
 	t.remain = remain
+	if buf.Len() == 0 {
+		t.ranges = nil
+		return
+	}
+	t.stat.Seek(0, 0)
+	t.stat.Truncate(int64(buf.Len()))
+	buf.WriteTo(t.stat)
 	//t.stat.Sync()
 }
 
@@ -207,6 +217,9 @@ func (t *DownloadTask) Go(conn *net.TCPConn, br *bufio.Reader) error {
 	stat, err = readHead(br)
 	if stat != 206 {
 		revertParent()
+		if stat == 200 {
+			t.initURL()
+		}
 		return fmt.Errorf("上游响应无效 %d %s", stat, err)
 	}
 	_len, _ := parseCode(err.Error())
@@ -238,36 +251,29 @@ func (t *DownloadTask) getThread() (cur, prev *DownloadThread) {
 	t.Lock()
 	var i int
 	for ; i < len(t.ranges); i++ {
+		_len := t.ranges[i].end - t.ranges[i].cur
+		// 找最大的未下载段，取一半下载
+		if _len > l {
+			l = _len
+			prev = t.ranges[i]
+		}
 		if t.ranges[i].state == stateNoWork {
 			cur = t.ranges[i]
 			prev = nil
 			break
 		}
-		// 找最大的未下载段，取一半下载
-		_len := t.ranges[i].end - t.ranges[i].cur
-		if _len > l {
-			l = _len
-			prev = t.ranges[i]
-		}
 	}
 	cur.state = stateReady
+	// 从已有片段分拆的新片段
 	if prev != nil {
-		if l < 64<<10 && l != 0 { // 最大未下载片段小于64K，停止再次分片
-			cur = nil
-		} else {
+		if l > 64<<10 {
 			cur.cur = (prev.cur + prev.end) / 2
 			cur.end = prev.end
 			prev.end = cur.cur - 1
 			t.ranges = append(t.ranges, cur)
-			//pos = len(t.ranges) -1
+		} else { // 分片过小
+			cur = nil
 		}
-		/*		if i == len(t.ranges) {
-					t.ranges = append(t.ranges, thread)
-				} else {
-					t.ranges = append(t.ranges, nil)
-					copy(t.ranges[pos+1:], t.ranges[pos:])
-					t.ranges[pos] = thread
-				}*/
 	}
 	t.Unlock()
 	return

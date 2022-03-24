@@ -43,10 +43,11 @@ func runProxy(ip net.IP) {
 		curTask.Do(curTask.init)
 		goto start
 	_err:
+		conn.Close()
 		if err != ErrNext {
 			log.Println(ip, err)
-			time.Sleep(5 * time.Second)
 		}
+		time.Sleep(10 * time.Second)
 	start:
 		conn, err = net.DialTCP("tcp", nil, &net.TCPAddr{IP: ip, Port: 443})
 		if err != nil {
@@ -68,10 +69,10 @@ func runProxy(ip net.IP) {
 			goto _err
 		}
 		err = task.Go(conn, br)
-		conn.Close()
 		if err != nil {
 			goto _err
 		}
+		conn.Close()
 		taskMutex.Lock()
 		if task == curTask {
 			log.Println(curTask.filename, "任务完成")
