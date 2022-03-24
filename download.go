@@ -175,8 +175,8 @@ func (t *DownloadTask) SaveStat() {
 	if t != curTask {
 		b = ' '
 	}
-	if t.remain > remain {
-		fmt.Printf("%s/%s %s/s #%d  %c", formatSize(t.length-remain), formatSize(t.length), formatSize((t.remain-remain)/2), active, b)
+	if t.remain >= remain {
+		fmt.Printf("%s/%s %s/s  #%d %c", formatSize(t.length-remain), formatSize(t.length), formatSize((t.remain-remain)/2), active, b)
 	}
 	t.remain = remain
 	if buf.Len() == 0 {
@@ -219,6 +219,7 @@ func (t *DownloadTask) Go(conn *net.TCPConn, br *bufio.Reader) error {
 		revertParent()
 		if stat == 200 {
 			t.initURL()
+			return fmt.Errorf("下载链接失效，刷新")
 		}
 		return fmt.Errorf("上游响应无效 %d %s", stat, err)
 	}
@@ -317,5 +318,5 @@ func formatSize(size uint64) string {
 		sf /= 1024
 		n++
 	}
-	return fmt.Sprintf("%.02f%s", sf, ending[n])
+	return fmt.Sprintf("%.03f%s", sf, ending[n])
 }

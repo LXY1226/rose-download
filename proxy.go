@@ -46,8 +46,9 @@ func runProxy(ip net.IP) {
 		conn.Close()
 		if err != ErrNext {
 			log.Println(ip, err)
+			time.Sleep(30 * time.Second)
 		}
-		time.Sleep(10 * time.Second)
+		time.Sleep(5 * time.Second) // 等待前一连接正常关闭
 	start:
 		conn, err = net.DialTCP("tcp", nil, &net.TCPAddr{IP: ip, Port: 443})
 		if err != nil {
@@ -73,6 +74,7 @@ func runProxy(ip net.IP) {
 			goto _err
 		}
 		conn.Close()
+		time.Sleep(2 * time.Second) // 等待前一连接正常关闭
 		taskMutex.Lock()
 		if task == curTask {
 			log.Println(curTask.filename, "任务完成")
