@@ -202,28 +202,37 @@ func (t *DownloadTask) Go(conn *net.TCPConn, logger *log.Logger, br *bufio.Reade
 		logger.Println("cur >= end, skip")
 	}
 	t.Lock()
-	if err != nil {
+	var pos int
+	var tag, mergedOrFinished bool
+	for i, r := range t.ranges {
+		if r == thread {
+			pos = i
+			if tag {
+				break
+			}
+			tag = true
+		}
+		if r.end+1 == thread.cur {
+			logger.Println("merging current range")
+			r.end = thread.end
+			mergedOrFinished = true
+			if tag {
+				break
+			}
+			tag = true
+		}
+	}
+	if err != nil { // merge+delete(if merged)
 		logger.Println(err)
-		for i, r := range t.ranges {
-			if r.end+1 == thread.cur {
-				r.end = thread.end
-				copy(t.ranges[i:], t.ranges[i+1:])
-				t.ranges = t.ranges[:len(t.ranges)-1]
-				break
-			}
-		}
-	} else {
-		for i, r := range t.ranges {
-			if r == thread {
-				copy(t.ranges[i+1:], t.ranges[i:])
-				t.ranges = t.ranges[:len(t.ranges)-1]
-				break
-			}
-		}
+	} else { // finished
+		mergedOrFinished = true
 		err = ErrNext
 	}
-	t.Unlock()
-	t.Lock()
+	if mergedOrFinished {
+		copy(t.ranges[pos:], t.ranges[pos+1:])
+		t.ranges = t.ranges[:len(t.ranges)-1]
+		logger.Println("deleting current range")
+	}
 	thread.state = stateNoWork
 	t.Unlock()
 	logger.Println(parent, thread, "end")
@@ -262,6 +271,9 @@ func (t *DownloadTask) run(conn *net.TCPConn, br *bufio.Reader, thread *Download
 }
 
 func (t *DownloadTask) getThread() (cur, prev *DownloadThread) {
+	if t.ranges == nil {
+		return nil, nil
+	}
 	cur = new(DownloadThread) // [0:0:0]
 	var l uint64
 	t.Lock()
