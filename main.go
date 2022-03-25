@@ -15,6 +15,12 @@ var wg sync.WaitGroup
 var nextTask func()
 
 func main() {
+	logF, err := os.OpenFile("log.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(err)
+	}
+	log.SetFlags(log.Ltime | log.Lmsgprefix)
+	log.SetOutput(io.MultiWriter(os.Stderr, logF))
 	f, err := os.Open("urls.txt")
 	if err != nil {
 		panic(err)

@@ -39,26 +39,29 @@ func runProxy(ip net.IP) {
 	var stat uint64
 	var err error
 	var conn *net.TCPConn
-	for curTask != nil {
-		curTask.Do(curTask.init)
+	logger := new(log.Logger)
+	logger.SetFlags(log.Flags())
+	logger.SetOutput(log.Writer())
+	logger.SetPrefix(ip.String() + " ")
+	logger.Println("已加载")
+	for {
+		taskMutex.Lock()
+		curTask.Do(curTask.init) // TODO simple CAS
+		task := curTask
+		taskMutex.Unlock()
 		for {
-			if err != nil {
+			if conn != nil {
 				conn.Close()
-				if err != ErrNext {
-					log.Println(ip, err)
-					time.Sleep(30 * time.Second)
-				}
 				time.Sleep(5 * time.Second) // 等待前一连接正常关闭
+			}
+			if err != nil && err != ErrNext {
+				time.Sleep(30 * time.Second)
 			}
 			conn, err = net.DialTCP("tcp", nil, &net.TCPAddr{IP: ip, Port: 443})
 			if err != nil {
 				continue
 			}
-			conn.SetReadBuffer(64 << 10)
 			br := bufio.NewReaderSize(conn, 256)
-			taskMutex.Lock()
-			task := curTask
-			taskMutex.Unlock()
 			err = task.header.SendProxyHeader(conn)
 			if err != nil {
 				err = errors.New("squid代理失败 " + err.Error())
@@ -69,20 +72,16 @@ func runProxy(ip net.IP) {
 				err = fmt.Errorf("squid响应无效 %d %s", stat, err.Error())
 				continue
 			}
-			err = task.Go(conn, br)
-			if err != nil {
-				continue
+			err = task.Go(conn, logger, br)
+			if err == nil {
+				taskMutex.Lock()
+				if task == curTask {
+					logger.Println(curTask.filename, "任务结束")
+					nextTask()
+				}
+				taskMutex.Unlock()
+				break
 			}
-			conn.Close()
-			time.Sleep(2 * time.Second) // 等待前一连接正常关闭
-			taskMutex.Lock()
-			if task == curTask {
-				log.Println(curTask.filename, "任务完成")
-				curTask.SaveStat()
-				nextTask()
-			}
-			taskMutex.Unlock()
-			break
 		}
 	}
 	wg.Done()

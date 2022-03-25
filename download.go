@@ -135,7 +135,7 @@ func (t *DownloadTask) init() {
 		thread.end = t.length
 		t.ranges = append(t.ranges, thread)
 	}
-	log.Println(t.filename, "任务开始")
+	log.Println(t.filename, "任务开始，从分片文件中读取到", len(t.ranges), "个分片范围")
 	go func() {
 		tick := time.NewTicker(2 * time.Second)
 		defer tick.Stop()
@@ -149,6 +149,7 @@ func (t *DownloadTask) init() {
 				t.f.Close()
 				t.stat.Close()
 				os.Remove(t.filename + ".stat")
+				log.Println(t.filename, "任务完成")
 				return
 			}
 		}
@@ -176,7 +177,7 @@ func (t *DownloadTask) SaveStat() {
 		b = ' '
 	}
 	if t.remain >= remain {
-		fmt.Printf("%s/%s %s/s  #%d %c", formatSize(t.length-remain), formatSize(t.length), formatSize((t.remain-remain)/2), active, b)
+		fmt.Printf("%s/%s %s/s #%d  %c", formatSize(t.length-remain), formatSize(t.length), formatSize((t.remain-remain)/2), active, b)
 	}
 	t.remain = remain
 	if buf.Len() == 0 {
@@ -189,34 +190,55 @@ func (t *DownloadTask) SaveStat() {
 	//t.stat.Sync()
 }
 
-func (t *DownloadTask) Go(conn *net.TCPConn, br *bufio.Reader) error {
+func (t *DownloadTask) Go(conn *net.TCPConn, logger *log.Logger, br *bufio.Reader) (err error) {
 	thread, parent := t.getThread()
-	var stat uint64
+	logger.Println(parent, thread, "start")
 	if thread == nil {
 		return nil
 	}
-	revertParent := func() {
-		t.Lock()
-		if parent != nil {
-			parent.end = thread.end
-			for i, r := range t.ranges {
-				if r == thread {
-					copy(t.ranges[i:], t.ranges[i+1:])
-					t.ranges = t.ranges[:len(t.ranges)-1]
-				}
+	if thread.cur < thread.end {
+		err = t.run(conn, br, thread)
+	} else {
+		logger.Println("cur >= end, skip")
+	}
+	t.Lock()
+	if err != nil {
+		logger.Println(err)
+		for i, r := range t.ranges {
+			if r.end+1 == thread.cur {
+				r.end = thread.end
+				copy(t.ranges[i:], t.ranges[i+1:])
+				t.ranges = t.ranges[:len(t.ranges)-1]
+				break
 			}
 		}
-		t.Unlock()
+	} else {
+		for i, r := range t.ranges {
+			if r == thread {
+				copy(t.ranges[i+1:], t.ranges[i:])
+				t.ranges = t.ranges[:len(t.ranges)-1]
+				break
+			}
+		}
+		err = ErrNext
 	}
-	err := t.header.SendHeader(conn, thread.cur)
+	t.Unlock()
+	t.Lock()
+	thread.state = stateNoWork
+	t.Unlock()
+	logger.Println(parent, thread, "end")
+	return err
+}
+
+func (t *DownloadTask) run(conn *net.TCPConn, br *bufio.Reader, thread *DownloadThread) (err error) {
+	var stat uint64
+	err = t.header.SendHeader(conn, thread.cur)
 	if err != nil {
-		revertParent()
 		return errors.New("发送请求失败 " + err.Error())
 	}
 
 	stat, err = readHead(br)
 	if stat != 206 {
-		revertParent()
 		if stat == 200 {
 			t.initURL()
 			return fmt.Errorf("下载链接失效，刷新")
@@ -226,23 +248,16 @@ func (t *DownloadTask) Go(conn *net.TCPConn, br *bufio.Reader) error {
 	_len, _ := parseCode(err.Error())
 	_len += thread.cur
 	if t.length != 0 && t.length != _len {
-		revertParent()
 		err = fmt.Errorf("文件长度不一致 %d!=%d", _len, t.length)
 		time.Sleep(25 * time.Second)
 		return err
 	}
 
-	thread.state = stateReceive
+	thread.state = stateReceive // 不需要锁
 	thread.f = t.f
 	br.WriteTo(thread)
 
 	_, err = thread.Download(conn)
-	t.Lock()
-	thread.state = stateNoWork
-	t.Unlock()
-	if err == nil {
-		err = ErrNext
-	}
 	return err
 }
 
@@ -281,6 +296,7 @@ func (t *DownloadTask) getThread() (cur, prev *DownloadThread) {
 }
 
 func (t *DownloadThread) Download(conn *net.TCPConn) (n int, err error) {
+	conn.SetReadBuffer(64 << 10)
 	buf := make([]byte, 256<<10) // 256K
 	for t.cur < t.end {
 		conn.SetReadDeadline(time.Now().Add(1 * time.Minute))
