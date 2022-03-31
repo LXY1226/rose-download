@@ -55,21 +55,24 @@ func runProxy(ip net.IP) {
 		task := curTask
 		for {
 			err := task.Go(&net.TCPAddr{IP: ip, Port: 443}, logger)
-			if err != nil {
-				if err != ErrNext {
-					logger.Println(err)
-					time.Sleep(30 * time.Second)
-				} else {
-					time.Sleep(5 * time.Second) // wait for prev connection close
-				}
-			} else {
+			logger.Printf("子任务结束 %v", err)
+			if err == nil {
 				break
+			}
+
+			if err != ErrNext {
+				//logger.Println(err)
+				time.Sleep(30 * time.Second)
+			} else {
+				time.Sleep(5 * time.Second) // wait for prev connection close
 			}
 		}
 		taskMutex.Lock()
 		if task == curTask {
 			logger.Println(curTask.filename, "任务结束")
 			nextTask()
+		} else {
+			logger.Println(curTask.filename, "任务切换")
 		}
 		taskMutex.Unlock()
 	}

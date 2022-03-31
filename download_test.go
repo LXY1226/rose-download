@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"testing"
 )
 
-func TestDownloadTask(te *testing.T) {
+/*func TestDownloadTask(te *testing.T) {
 	t := DownloadTask{}
 	t.ranges = append(t.ranges)
 	_len := uint64(226310164)
@@ -35,9 +37,10 @@ func TestDownloadTask(te *testing.T) {
 	for i, thread := range t.ranges {
 		fmt.Println(thread, i)
 	}
-}
+}*/
 
 func TestOCR(t *testing.T) {
-	server := 127.0.0.1
+	var testF *os.File
+	lr := io.LimitReader(testF, 64)
 
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 )
 
 var wg sync.WaitGroup
@@ -59,39 +60,45 @@ func main() {
 func getFileURL(url string) string {
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("User-Agent", UA)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		panic(err)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
-	}
-	i := bytes.Index(body, ([]byte)("// is open ref count\nadd_ref"))
-	if i == -1 {
-		log.Println("failed to split fileid", url)
-		return ""
-	}
-	body = body[i+29-31:]
-	copy(body, "action=load_down_addr1&file_id=")
-	i = bytes.IndexByte(body, ')')
-	body = body[:i]
-	req, _ = http.NewRequest("POST", "https://rosefile.net/ajax.php", bytes.NewReader(body))
-	req.Header.Set("Referer", url)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	//req.Header.Set("User-Agent", UA)
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		panic(err)
-	}
-	body, err = io.ReadAll(resp.Body)
-	i = bytes.IndexByte(body, '"')
-	if i == -1 {
-		log.Println("failed to split fileurl", url)
-		return ""
-	}
-	body = body[i+1:]
-	i = bytes.IndexByte(body, '"')
+	for {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Println(err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Println(err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		i := bytes.Index(body, ([]byte)("// is open ref count\nadd_ref"))
+		if i == -1 {
+			log.Println("failed to split fileid", url)
+			return ""
+		}
+		body = body[i+29-31:]
+		copy(body, "action=load_down_addr1&file_id=")
+		i = bytes.IndexByte(body, ')')
+		body = body[:i]
+		req, _ = http.NewRequest("POST", "https://rosefile.net/ajax.php", bytes.NewReader(body))
+		req.Header.Set("Referer", url)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		//req.Header.Set("User-Agent", UA)
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		body, err = io.ReadAll(resp.Body)
+		i = bytes.IndexByte(body, '"')
+		if i == -1 {
+			log.Println("failed to split fileurl", url)
+			return ""
+		}
+		body = body[i+1:]
+		i = bytes.IndexByte(body, '"')
 
-	return string(body[:i])
+		return string(body[:i])
+	}
 }

@@ -106,7 +106,7 @@ func (t *DownloadTask) init() (err error) {
 	}
 	t.filename = filename
 	t.stat = stat
-	log.Println(t.filename, "任务开始，从分片文件中读取到", len(t.ranges), "个分片范围")
+	log.Printf("%s 任务开始，从分片文件中读取到 %d 个分片范围 %p", t.filename, len(t.ranges), t)
 	if t.ranges == nil {
 		thread := new(DownloadThread)
 		thread.cur = 0
@@ -182,6 +182,8 @@ func (t *DownloadTask) SaveStat() {
 
 func (t *DownloadTask) Go(addr *net.TCPAddr, logger *log.Logger) (err error) {
 	thread, _ := t.getThread()
+	logger.Printf("子任务开始 %p %p", t, thread)
+
 	if thread == nil {
 		return
 	}
@@ -208,7 +210,6 @@ func (t *DownloadTask) Go(addr *net.TCPAddr, logger *log.Logger) (err error) {
 			tag = true
 		}
 		if r.end+1 == thread.cur {
-			logger.Println("merging current range")
 			r.end = thread.end
 			mergedOrFinished = true
 			if tag {
@@ -224,12 +225,10 @@ func (t *DownloadTask) Go(addr *net.TCPAddr, logger *log.Logger) (err error) {
 	if mergedOrFinished {
 		copy(t.ranges[pos:], t.ranges[pos+1:])
 		t.ranges = t.ranges[:len(t.ranges)-1]
-		logger.Println("deleting current range")
 	}
 	thread.state = stateNoWork
 	t.Unlock()
-	t.SaveStat()
-	return err
+	return
 }
 
 func (t *DownloadTask) run(conn *net.TCPConn, thread *DownloadThread) (err error) {
@@ -245,7 +244,7 @@ func (t *DownloadTask) run(conn *net.TCPConn, thread *DownloadThread) (err error
 			t.initURL()
 			return fmt.Errorf("下载链接失效，刷新")
 		}
-		return fmt.Errorf("上游响应无效 %d %s", stat, err)
+		return fmt.Errorf("响应无效 %d %s", stat, err)
 	}
 	_len, _ := parseCode(err.Error())
 	_len += thread.cur
@@ -259,7 +258,7 @@ func (t *DownloadTask) run(conn *net.TCPConn, thread *DownloadThread) (err error
 	thread.f = t.f
 	br.WriteTo(thread)
 
-	_, err = thread.Download(conn)
+	err = thread.Download(conn)
 	return err
 }
 
@@ -267,6 +266,7 @@ func (t *DownloadTask) getThread() (cur, prev *DownloadThread) {
 	cur = new(DownloadThread) // [0:0:0]
 	var l uint64
 	t.Lock()
+	defer t.Unlock()
 	if len(t.ranges) == 0 {
 		return nil, nil
 	}
@@ -294,24 +294,6 @@ func (t *DownloadTask) getThread() (cur, prev *DownloadThread) {
 			t.ranges = append(t.ranges, cur)
 		} else { // 分片过小
 			cur = nil
-		}
-	}
-	t.Unlock()
-	return
-}
-
-func (t *DownloadThread) Download(conn *net.TCPConn) (n int, err error) {
-	conn.SetReadBuffer(64 << 10)
-	buf := make([]byte, 256<<10) // 256K
-	for t.cur < t.end {
-		conn.SetReadDeadline(time.Now().Add(1 * time.Minute))
-		n, err = conn.Read(buf)
-		if err != nil {
-			return
-		}
-		n, err = t.Write(buf[:n])
-		if err != nil {
-			return
 		}
 	}
 	return
