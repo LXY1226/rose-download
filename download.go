@@ -8,11 +8,14 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
-	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+const freshInt = 2
 
 type DownloadTask struct {
 	webUrl string
@@ -27,7 +30,7 @@ type DownloadTask struct {
 	length uint64
 	remain uint64
 	sync.Mutex
-	sync.Once // init
+	once uint32
 }
 
 type ThreadState byte
@@ -44,25 +47,32 @@ const (
 	stateReceive
 )
 
-func (t *DownloadTask) initURL() (host, path string) {
-	furl := getFileURL(t.webUrl)
-	if furl == "" {
-		log.Println("任务", t.webUrl, "失败")
+func (t *DownloadTask) initURL() (fName, fUrl string) {
+	fUrl = getFileURL(t.webUrl)
+	if fUrl == "" {
 		return
 	}
+	log.Println(fUrl)
 
-	t.header, host, path = NewHeader(furl)
+	t.header = NewHeader(fUrl)
+	i := strings.LastIndexByte(fUrl, '/')
+	if i != -1 {
+		fName = fUrl[i+1:]
+	}
 	return
 }
 
 // only once
-func (t *DownloadTask) init() {
-	host, path := t.initURL()
-	if path == "" {
+func (t *DownloadTask) init() (err error) {
+	filename, fUrl := t.initURL()
+	if fUrl == "" {
+		log.Println("任务", t.webUrl, "失败")
 		return
 	}
-	_, filename := filepath.Split(path)
-	var err error
+	if filename != t.filename && filename != "" {
+		log.Printf("文件名不匹配 %s => %s", t.filename, filename)
+		t.filename = filename
+	}
 	t.f, err = os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		panic(err)
@@ -94,56 +104,30 @@ func (t *DownloadTask) init() {
 			t.ranges = append(t.ranges, thread)
 		}
 	}
-	//stat.Seek(0, 0)
-	//stat.WriteString("# ")
-	//stat.WriteString(filename)
-	//stat.WriteString("\n")
-	//stat.WriteString("\n# ")
-	//stat.WriteString(path)
 	t.filename = filename
 	t.stat = stat
+	log.Println(t.filename, "任务开始，从分片文件中读取到", len(t.ranges), "个分片范围")
 	if t.ranges == nil {
 		thread := new(DownloadThread)
 		thread.cur = 0
-		for i := 0; i < 5; i++ {
-			conn, err := net.Dial("tcp", host+":80")
-			if err != nil {
-				log.Println("本地连接失败", err)
-				continue
-			}
-			br := bufio.NewReader(conn)
-			err = t.header.SendHeader(conn, 0)
-			if err != nil {
-				log.Println("发送请求失败" + err.Error())
-				continue
-			}
-			var resp uint64
-			resp, err = readHead(br)
-			if resp != 206 {
-				log.Println("上游响应无效", stat, err)
-			}
-			conn.Close()
-			_len, _ := parseCode(err.Error())
-			if t.length != 0 && t.length != _len {
-				err = fmt.Errorf("文件长度不一致 %d!=%d", _len, t.length)
-				time.Sleep(25 * time.Second)
-			}
-			t.f.Truncate(int64(_len))
-			t.length = _len
-			break
+		var _len uint64
+		_len, err = httpContentLength(fUrl)
+		if err != nil {
+			return
 		}
+		if t.length != 0 && t.length != _len {
+			err = fmt.Errorf("文件长度不一致 %d!=%d", _len, t.length)
+			time.Sleep(25 * time.Second)
+		}
+		t.f.Truncate(int64(_len))
+		t.length = _len
 		thread.end = t.length
 		t.ranges = append(t.ranges, thread)
 	}
-	log.Println(t.filename, "任务开始，从分片文件中读取到", len(t.ranges), "个分片范围")
 	go func() {
 		tick := time.NewTicker(2 * time.Second)
 		defer tick.Stop()
 		for range tick.C {
-			if t.ranges == nil {
-				continue
-			}
-			t.SaveStat()
 			if len(t.ranges) == 0 {
 				t.remain = 0
 				t.f.Close()
@@ -152,8 +136,10 @@ func (t *DownloadTask) init() {
 				log.Println(t.filename, "任务完成")
 				return
 			}
+			t.SaveStat()
 		}
 	}()
+	return
 }
 
 func (t *DownloadTask) SaveStat() {
@@ -177,7 +163,11 @@ func (t *DownloadTask) SaveStat() {
 		b = ' '
 	}
 	if t.remain >= remain {
-		fmt.Printf("%s/%s %s/s #%d  %c", formatSize(t.length-remain), formatSize(t.length), formatSize((t.remain-remain)/2), active, b)
+		fmt.Printf("%s/%s %s/s #%d  %c",
+			formatSize(t.length-remain),
+			formatSize(t.length),
+			formatSize((t.remain-remain)/freshInt),
+			active, b)
 	}
 	t.remain = remain
 	if buf.Len() == 0 {
@@ -190,17 +180,22 @@ func (t *DownloadTask) SaveStat() {
 	//t.stat.Sync()
 }
 
-func (t *DownloadTask) Go(conn *net.TCPConn, logger *log.Logger, br *bufio.Reader) (err error) {
-	thread, parent := t.getThread()
-	logger.Println(parent, thread, "start")
+func (t *DownloadTask) Go(addr *net.TCPAddr, logger *log.Logger) (err error) {
+	thread, _ := t.getThread()
 	if thread == nil {
-		return nil
+		return
 	}
 	if thread.cur < thread.end {
-		err = t.run(conn, br, thread)
+		var conn *net.TCPConn
+		conn, err = net.DialTCP("tcp", nil, addr)
+		if err == nil {
+			err = t.run(conn, thread)
+			conn.Close()
+		}
 	} else {
 		logger.Println("cur >= end, skip")
 	}
+
 	t.Lock()
 	var pos int
 	var tag, mergedOrFinished bool
@@ -222,9 +217,7 @@ func (t *DownloadTask) Go(conn *net.TCPConn, logger *log.Logger, br *bufio.Reade
 			tag = true
 		}
 	}
-	if err != nil { // merge+delete(if merged)
-		logger.Println(err)
-	} else { // finished
+	if err == nil { // finished
 		mergedOrFinished = true
 		err = ErrNext
 	}
@@ -235,17 +228,17 @@ func (t *DownloadTask) Go(conn *net.TCPConn, logger *log.Logger, br *bufio.Reade
 	}
 	thread.state = stateNoWork
 	t.Unlock()
-	logger.Println(parent, thread, "end")
+	t.SaveStat()
 	return err
 }
 
-func (t *DownloadTask) run(conn *net.TCPConn, br *bufio.Reader, thread *DownloadThread) (err error) {
+func (t *DownloadTask) run(conn *net.TCPConn, thread *DownloadThread) (err error) {
 	var stat uint64
 	err = t.header.SendHeader(conn, thread.cur)
 	if err != nil {
 		return errors.New("发送请求失败 " + err.Error())
 	}
-
+	br := bufio.NewReader(conn)
 	stat, err = readHead(br)
 	if stat != 206 {
 		if stat == 200 {
@@ -271,12 +264,12 @@ func (t *DownloadTask) run(conn *net.TCPConn, br *bufio.Reader, thread *Download
 }
 
 func (t *DownloadTask) getThread() (cur, prev *DownloadThread) {
-	if t.ranges == nil {
-		return nil, nil
-	}
 	cur = new(DownloadThread) // [0:0:0]
 	var l uint64
 	t.Lock()
+	if len(t.ranges) == 0 {
+		return nil, nil
+	}
 	var i int
 	for ; i < len(t.ranges); i++ {
 		_len := t.ranges[i].end - t.ranges[i].cur
@@ -336,6 +329,33 @@ func (t *DownloadThread) Write(p []byte) (n int, err error) {
 	n, err = t.f.WriteAt(p, int64(t.cur))
 	t.cur += uint64(n)
 	return
+}
+
+func httpContentLength(url string) (length uint64, err error) {
+	var req *http.Request
+	var resp *http.Response
+	req, err = http.NewRequest("HEAD", url, nil)
+	if err != nil {
+		return
+	}
+	//req.Header.Set("Content-Range", "0-")
+	req.Header.Set("User-Agent", UA)
+	req.Header.Set("Referer", "https://rosefile.net")
+	for i := 0; i < 5; i++ {
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			continue
+		}
+	}
+	if err != nil {
+		return
+	}
+	if resp.StatusCode != 200 {
+		err = fmt.Errorf("unexpected resp: %d", resp.StatusCode)
+		return
+	}
+	//length, _ = parseCode(resp.Header.Get("Content-Length"))
+	return uint64(resp.ContentLength), err
 }
 
 func formatSize(size uint64) string {

@@ -12,56 +12,43 @@ import (
 )
 
 type HttpHeader struct {
-	Host        string
-	conn        *net.TCPConn
-	header      []byte
-	proxyHeader []byte
-	sync.Mutex  // for header
+	Host   string
+	conn   *net.TCPConn
+	header []byte
+	//proxyHeader []byte
+	sync.Mutex // for header
 }
 
 const (
-	UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.74 Safari/537.36 Edg/99.0.1150.46"
+	UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.74 Safari/537.36 Edg/99.0.1150.46 baiduboxapp/13.6.0.10"
+	// Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 SP-engine/2.44.0 baiduboxapp/13.6.0.10 (Baidu; P2 15.0)
 )
 
-func NewHeader(url string) (*HttpHeader, string, string) {
-	if strings.HasPrefix(url, "http") {
-		i := strings.IndexByte(url, '/')
-		i += 2
-		url = url[i:]
-	}
-	i := strings.IndexByte(url, '/')
-	host := url[:i]
-	path := url[i:]
+func NewHeader(url string) *HttpHeader {
 	h := new(HttpHeader)
-	h.Reset(host, path)
-	return h, host, path
+	h.Reset(strings.Replace(url, "https", "http", 1))
+	return h
 }
 
-func (h *HttpHeader) Reset(host, path string) {
+func (h *HttpHeader) Reset(url string) {
 	buf := bytes.Buffer{}
-	buf.WriteString("CONNECT ")
-	buf.WriteString(host)
-	buf.WriteString(":80 HTTP/1.1\r\n")
-	buf.WriteString("X-T5-Auth: ZjQxNDIh\r\n\r\n")
-	h.proxyHeader = buf.Bytes()
-
 	buf.WriteString("GET ")
-	buf.WriteString(path)
+	buf.WriteString(url)
 	buf.WriteString(" HTTP/1.1\r\n")
-	buf.WriteString("Connection: close\r\n")
+	buf.WriteString("Proxy-Connection: close\r\n")
+	//buf.WriteString("dispatch_header: bdp_dispatch_header\r\n")
 	buf.WriteString("User-Agent: " + UA + "\r\n")
-	buf.WriteString("Host: ")
-	buf.WriteString(host)
-	buf.WriteString("\r\n")
+	buf.WriteString("X-T5-Auth: 55149428\r\n")
+	//buf.WriteString("X-BDBoxApp-NetEngine: 3\r\n")
 	buf.WriteString("Referer: https://rosefile.net/\r\n")
 	buf.WriteString("Range: bytes=")
-	h.header = buf.Bytes()[len(h.proxyHeader):]
+	h.header = buf.Bytes() //[len(h.proxyHeader):]
 }
 
-func (h *HttpHeader) SendProxyHeader(conn io.Writer) error {
-	_, err := conn.Write(h.proxyHeader)
-	return err
-}
+//func (h *HttpHeader) SendProxyHeader(conn io.Writer) error {
+//	_, err := conn.Write(h.proxyHeader)
+//	return err
+//}
 
 func (h *HttpHeader) SendHeader(conn io.Writer, start uint64) error {
 	h.Lock()

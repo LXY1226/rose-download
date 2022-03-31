@@ -25,6 +25,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	http.DefaultClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	bf := bufio.NewScanner(f)
 	nextTask = func() {
 		for bf.Scan() {
@@ -41,7 +44,7 @@ func main() {
 					continue
 				}
 			}
-			curTask = &DownloadTask{webUrl: url}
+			curTask = &DownloadTask{webUrl: url, filename: name}
 			return
 		}
 		curTask = nil

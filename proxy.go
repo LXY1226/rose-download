@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"os"
@@ -36,53 +35,43 @@ var ErrNext = errors.New("")
 
 func runProxy(ip net.IP) {
 	wg.Add(1)
-	var stat uint64
-	var err error
-	var conn *net.TCPConn
 	logger := new(log.Logger)
 	logger.SetFlags(log.Flags())
 	logger.SetOutput(log.Writer())
-	logger.SetPrefix(ip.String() + " ")
+	b := []byte("                ")
+	copy(b, ip.String())
+	logger.SetPrefix(string(b))
 	logger.Println("已加载")
 	for {
 		taskMutex.Lock()
-		curTask.Do(curTask.init) // TODO simple CAS
-		task := curTask
+		if curTask == nil {
+			break
+		}
+		if curTask.once == 0 {
+			curTask.init()
+			curTask.once = 1
+		}
 		taskMutex.Unlock()
+		task := curTask
 		for {
-			if conn != nil {
-				conn.Close()
-				time.Sleep(5 * time.Second) // 等待前一连接正常关闭
-			}
-			if err != nil && err != ErrNext {
-				time.Sleep(30 * time.Second)
-			}
-			conn, err = net.DialTCP("tcp", nil, &net.TCPAddr{IP: ip, Port: 443})
+			err := task.Go(&net.TCPAddr{IP: ip, Port: 443}, logger)
 			if err != nil {
-				continue
-			}
-			br := bufio.NewReaderSize(conn, 256)
-			err = task.header.SendProxyHeader(conn)
-			if err != nil {
-				err = errors.New("squid代理失败 " + err.Error())
-				continue
-			}
-			stat, err = readHead(br)
-			if stat != 200 {
-				err = fmt.Errorf("squid响应无效 %d %s", stat, err.Error())
-				continue
-			}
-			err = task.Go(conn, logger, br)
-			if err == nil {
-				taskMutex.Lock()
-				if task == curTask {
-					logger.Println(curTask.filename, "任务结束")
-					nextTask()
+				if err != ErrNext {
+					logger.Println(err)
+					time.Sleep(30 * time.Second)
+				} else {
+					time.Sleep(5 * time.Second) // wait for prev connection close
 				}
-				taskMutex.Unlock()
+			} else {
 				break
 			}
 		}
+		taskMutex.Lock()
+		if task == curTask {
+			logger.Println(curTask.filename, "任务结束")
+			nextTask()
+		}
+		taskMutex.Unlock()
 	}
 	wg.Done()
 }
