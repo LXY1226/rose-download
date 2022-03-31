@@ -27,8 +27,8 @@ type DownloadTask struct {
 
 	stat   *os.File
 	ranges []*DownloadThread
-	length uint64
-	remain uint64
+	length int64
+	remain int64
 	sync.Mutex
 	once uint32
 }
@@ -37,7 +37,7 @@ type ThreadState byte
 
 type DownloadThread struct {
 	f        *os.File
-	cur, end uint64
+	cur, end int64
 	state    ThreadState
 }
 
@@ -79,7 +79,7 @@ func (t *DownloadTask) init() (err error) {
 	}
 	fStat, err := t.f.Stat()
 	if err == nil {
-		t.length = uint64(fStat.Size())
+		t.length = fStat.Size()
 	}
 	stat, err := os.OpenFile(filename+".stat", os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
@@ -96,10 +96,10 @@ func (t *DownloadTask) init() (err error) {
 			//if line[2:] ==
 			continue
 		}
-		thread := new(DownloadThread)
 		var ln string
-		thread.cur, ln = parseCode(string(line))
-		thread.end, _ = parseCode(ln[1:])
+		thread := new(DownloadThread)
+		thread.cur, ln = wrapI64(parseCode(string(line)))
+		thread.end, _ = wrapI64(parseCode(ln[1:]))
 		if thread.cur < thread.end {
 			t.ranges = append(t.ranges, thread)
 		}
@@ -110,8 +110,8 @@ func (t *DownloadTask) init() (err error) {
 	if t.ranges == nil {
 		thread := new(DownloadThread)
 		thread.cur = 0
-		var _len uint64
-		_len, err = httpContentLength(fUrl)
+		var _len int64
+		_len, err = wrapI64(httpContentLength(fUrl))
 		if err != nil {
 			return
 		}
@@ -119,7 +119,7 @@ func (t *DownloadTask) init() (err error) {
 			err = fmt.Errorf("文件长度不一致 %d!=%d", _len, t.length)
 			time.Sleep(25 * time.Second)
 		}
-		t.f.Truncate(int64(_len))
+		t.f.Truncate(_len)
 		t.length = _len
 		thread.end = t.length
 		t.ranges = append(t.ranges, thread)
@@ -143,7 +143,7 @@ func (t *DownloadTask) init() (err error) {
 }
 
 func (t *DownloadTask) SaveStat() {
-	var remain uint64
+	var remain int64
 	buf := bytes.Buffer{}
 	active := 0
 	t.Lock()
@@ -192,8 +192,8 @@ func (t *DownloadTask) Go(addr *net.TCPAddr, logger *log.Logger) (err error) {
 		conn, err = net.DialTCP("tcp", nil, addr)
 		if err == nil {
 			err = t.run(conn, thread)
-			conn.Close()
 		}
+		conn.Close()
 	} else {
 		logger.Println("cur >= end, skip")
 	}
@@ -246,7 +246,7 @@ func (t *DownloadTask) run(conn *net.TCPConn, thread *DownloadThread) (err error
 		}
 		return fmt.Errorf("响应无效 %d %s", stat, err)
 	}
-	_len, _ := parseCode(err.Error())
+	_len, _ := wrapI64(parseCode(err.Error()))
 	_len += thread.cur
 	if t.length != 0 && t.length != _len {
 		err = fmt.Errorf("文件长度不一致 %d!=%d", _len, t.length)
@@ -264,7 +264,7 @@ func (t *DownloadTask) run(conn *net.TCPConn, thread *DownloadThread) (err error
 
 func (t *DownloadTask) getThread() (cur, prev *DownloadThread) {
 	cur = new(DownloadThread) // [0:0:0]
-	var l uint64
+	var l int64
 	t.Lock()
 	defer t.Unlock()
 	if len(t.ranges) == 0 {
@@ -308,9 +308,13 @@ func (t *DownloadThread) String() string {
 }
 
 func (t *DownloadThread) Write(p []byte) (n int, err error) {
-	n, err = t.f.WriteAt(p, int64(t.cur))
-	t.cur += uint64(n)
+	n, err = t.f.WriteAt(p, t.cur)
+	t.cur += int64(n)
 	return
+}
+
+func wrapI64[T any](v uint64, t T) (int64, T) {
+	return int64(v), t
 }
 
 func httpContentLength(url string) (length uint64, err error) {
@@ -340,7 +344,7 @@ func httpContentLength(url string) (length uint64, err error) {
 	return uint64(resp.ContentLength), err
 }
 
-func formatSize(size uint64) string {
+func formatSize(size int64) string {
 	ending := []string{" B", "KB", "MB", "GB", "TB"}
 	sf := float32(size)
 	n := 0

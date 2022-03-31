@@ -50,10 +50,10 @@ func (h *HttpHeader) Reset(url string) {
 //	return err
 //}
 
-func (h *HttpHeader) SendHeader(conn io.Writer, start uint64) error {
+func (h *HttpHeader) SendHeader(conn io.Writer, start int64) error {
 	h.Lock()
 	defer h.Unlock()
-	header := strconv.AppendUint(h.header, start, 10)
+	header := strconv.AppendInt(h.header, start, 10)
 	header = append(header, "-\r\n\r\n"...)
 	_, err := conn.Write(header)
 	return err

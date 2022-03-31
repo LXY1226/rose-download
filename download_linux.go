@@ -20,10 +20,9 @@ const (
 
 func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	conn.SetReadBuffer(128 << 10)
-	defer conn.Close()
 	var file *os.File
 	file, _ = os.OpenFile(t.f.Name(), os.O_WRONLY, 0644)
-	file.Seek(int64(t.cur), 0)
+	file.Seek(t.cur, 0)
 	defer file.Close()
 
 	fileFF := (*linuxFileStub)(unsafe.Pointer(file)).file
@@ -31,6 +30,11 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 
 	fileFF.fdmu.incref()
 	connFF.fdmu.incref()
+	defer fileFF.fdmu.decref()
+	defer connFF.fdmu.decref()
+
+	//syscall.SetNonblock(fileFF.Sysfd, false)
+	//syscall.SetNonblock(fileFF.Sysfd, false)
 
 	// 生成pipe对
 	r, w, _ := os.Pipe()
@@ -40,37 +44,42 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	wFF := (*linuxFileStub)(unsafe.Pointer(w)).file
 	rFF.fdmu.incref()
 	wFF.fdmu.incref()
+	defer rFF.fdmu.decref()
+	defer wFF.fdmu.decref()
 	pdConn := connFF.pd
 
 	for t.cur < t.end {
+		// 如果上次没读到东西确保在数据范围内
+		setDeadlineImpl(connFF, 1*time.Minute, 'r')
+		if err == syscall.EAGAIN {
+			err = pdConn.waitRead(connFF.isFile)
+			if err != nil {
+				return err
+			}
+		}
 		var n int64
 		// 从连接读到pipe
-		setDeadlineImpl(connFF, 1*time.Minute, 'r')
-		err = pdConn.prepareRead(true)
-		if err != nil {
-			return err
-		}
 		n, err = syscall.Splice(connFF.Sysfd, nil, wFF.Sysfd, nil, 1<<20, spliceMove|spliceMore|spliceNonblock)
 		if err != nil {
 			switch err {
-			case syscall.EINTR:
-				continue
-			case syscall.EAGAIN:
-				err = pdConn.waitRead(connFF.isFile)
-				if err != nil {
-					return err
-				}
+			case syscall.EINTR, syscall.EAGAIN:
 				continue
 			default:
 				return err
 			}
 		}
-		t.cur += uint64(n)
 		// 从pipe写到文件
-		n, err = syscall.Splice(rFF.Sysfd, nil, fileFF.Sysfd, nil, int(n), spliceMove|spliceMore) // block here
-		if err != nil && err != syscall.EAGAIN {
+		for {
+			n, err = syscall.Splice(rFF.Sysfd, nil, fileFF.Sysfd, &t.cur, int(n), spliceMove|spliceMore)
+			if err == nil {
+				break
+			}
+			if err == syscall.EAGAIN {
+				continue
+			}
 			return err
 		}
+		t.cur += n
 	}
 	return
 }
