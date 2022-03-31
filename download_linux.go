@@ -34,7 +34,7 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	defer connFF.fdmu.decref()
 
 	//syscall.SetNonblock(fileFF.Sysfd, false)
-	//syscall.SetNonblock(fileFF.Sysfd, false)
+	syscall.SetNonblock(fileFF.Sysfd, false)
 
 	// 生成pipe对
 	r, w, _ := os.Pipe()
@@ -47,6 +47,7 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	defer rFF.fdmu.decref()
 	defer wFF.fdmu.decref()
 	pdConn := connFF.pd
+	pdFile := fileFF.pd
 
 	for t.cur < t.end {
 		// 如果上次没读到东西确保在数据范围内
@@ -65,6 +66,7 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 			case syscall.EINTR, syscall.EAGAIN:
 				continue
 			default:
+				err = pdConn.prepareRead(connFF.isFile)
 				return err
 			}
 		}
@@ -74,9 +76,7 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 			if err == nil {
 				break
 			}
-			if err == syscall.EAGAIN {
-				continue
-			}
+			err = pdFile.prepareWrite(fileFF.isFile)
 			return err
 		}
 		t.cur += n
@@ -98,8 +98,16 @@ func (pd *pollDesc) waitRead(isFile bool) error {
 	return wait(pd, 'r', isFile)
 }
 
+func (pd *pollDesc) waitWrite(isFile bool) error {
+	return wait(pd, 'w', isFile)
+}
+
 func (pd *pollDesc) prepareRead(isFile bool) error {
 	return prepare(pd, 'r', isFile)
+}
+
+func (pd *pollDesc) prepareWrite(isFile bool) error {
+	return prepare(pd, 'w', isFile)
 }
 
 type linuxFileStub struct {
