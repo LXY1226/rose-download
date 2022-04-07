@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 )
 
 const freshInt = 2
+const flushInt = 10
+const speedWindow = 60
 
 type DownloadTask struct {
 	webUrl string
@@ -31,6 +34,10 @@ type DownloadTask struct {
 	remain int64
 	sync.Mutex
 	once uint32
+
+	speeds [speedWindow / freshInt]int64
+	speedI uint16
+	speed  int64
 }
 
 type ThreadState byte
@@ -107,25 +114,33 @@ func (t *DownloadTask) init() (err error) {
 	t.filename = filename
 	t.stat = stat
 	log.Printf("%s 任务开始，从分片文件中读取到 %d 个分片范围 %p", t.filename, len(t.ranges), t)
+	var _len int64
+	_len, err = wrapI64(httpContentLength(fUrl))
+	if err != nil {
+		return
+	}
+	if t.length != 0 && t.length != _len {
+		log.Printf("%s 文件长度不一致 %d!=%d", t.filename, _len, t.length)
+	}
+	if _len > 1<<20 {
+		t.length = _len
+	}
+	log.Println(t.filename, "文件大小", t.length)
+	t.f.Truncate(_len)
 	if t.ranges == nil {
 		thread := new(DownloadThread)
 		thread.cur = 0
-		var _len int64
-		_len, err = wrapI64(httpContentLength(fUrl))
-		if err != nil {
-			return
-		}
-		if t.length != 0 && t.length != _len {
-			err = fmt.Errorf("文件长度不一致 %d!=%d", _len, t.length)
-			time.Sleep(25 * time.Second)
-		}
-		t.f.Truncate(_len)
-		t.length = _len
 		thread.end = t.length
 		t.ranges = append(t.ranges, thread)
+	} else {
+		for _, r := range t.ranges {
+			if r.end > t.length {
+				r.end = t.length
+			}
+		}
 	}
 	go func() {
-		tick := time.NewTicker(2 * time.Second)
+		tick := time.NewTicker(freshInt * time.Second)
 		defer tick.Stop()
 		for range tick.C {
 			if len(t.ranges) == 0 {
@@ -162,6 +177,14 @@ func (t *DownloadTask) SaveStat() {
 	if t != curTask {
 		b = ' '
 	}
+	// TODO 窗口速度
+	/*	delta := (t.remain - remain) / freshInt
+		t.speeds[t.speedI] = delta
+		t.speedI++
+		if t.speedI == speedWindow/freshInt {
+
+		}
+		t.speed += delta */
 	if t.remain >= remain {
 		fmt.Printf("%s/%s %s/s #%d  %c",
 			formatSize(t.length-remain),
@@ -180,7 +203,7 @@ func (t *DownloadTask) SaveStat() {
 	//t.stat.Sync()
 }
 
-func (t *DownloadTask) Go(addr *net.TCPAddr, logger *log.Logger) (err error) {
+func (t *DownloadTask) Go(dialer *sysDialer, raddr *net.TCPAddr, logger *log.Logger) (err error) {
 	thread, _ := t.getThread()
 	logger.Printf("子任务开始 %p %p", t, thread)
 
@@ -189,7 +212,8 @@ func (t *DownloadTask) Go(addr *net.TCPAddr, logger *log.Logger) (err error) {
 	}
 	if thread.cur < thread.end {
 		var conn *net.TCPConn
-		conn, err = net.DialTCP("tcp", nil, addr)
+		ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
+		conn, err = dialer.dialTCP(ctx, nil, raddr)
 		if err == nil {
 			err = t.run(conn, thread)
 		}
@@ -313,7 +337,7 @@ func (t *DownloadThread) Write(p []byte) (n int, err error) {
 	return
 }
 
-func wrapI64[T any](v uint64, t T) (int64, T) {
+func wrapI64[V uint64, T any](v V, t T) (int64, T) {
 	return int64(v), t
 }
 

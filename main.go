@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -60,23 +61,32 @@ func main() {
 func getFileURL(url string) string {
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("User-Agent", UA)
+	var resp *http.Response
+	var err error
+	var body []byte
+	var sleepIntv time.Duration
 	for {
-		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			log.Println(err)
-			time.Sleep(3 * time.Second)
+			sleepIntv += 3 * time.Second
+			time.Sleep(sleepIntv)
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
 			continue
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err = io.ReadAll(resp.Body)
 		if err != nil {
-			log.Println(err)
-			time.Sleep(3 * time.Second)
+			continue
+		}
+		if resp.StatusCode != 200 {
+			err = errors.New("resp:" + resp.Status)
 			continue
 		}
 		i := bytes.Index(body, ([]byte)("// is open ref count\nadd_ref"))
 		if i == -1 {
-			log.Println("failed to split fileid", url)
-			return ""
+			err = errors.New("failed to split fileid " + url)
+			continue
 		}
 		body = body[i+29-31:]
 		copy(body, "action=load_down_addr1&file_id=")
@@ -85,7 +95,7 @@ func getFileURL(url string) string {
 		req, _ = http.NewRequest("POST", "https://rosefile.net/ajax.php", bytes.NewReader(body))
 		req.Header.Set("Referer", url)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		//req.Header.Set("User-Agent", UA)
+		req.Header.Set("User-Agent", UA)
 		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
 			panic(err)
@@ -93,8 +103,8 @@ func getFileURL(url string) string {
 		body, err = io.ReadAll(resp.Body)
 		i = bytes.IndexByte(body, '"')
 		if i == -1 {
-			log.Println("failed to split fileurl", url)
-			return ""
+			err = errors.New("failed to split fileurl " + url)
+			continue
 		}
 		body = body[i+1:]
 		i = bytes.IndexByte(body, '"')

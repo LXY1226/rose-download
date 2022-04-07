@@ -12,11 +12,15 @@ import (
 )
 
 const (
-	spliceMove = 0x1
-	// spliceNonblock makes calls to splice(2) non-blocking.
+	spliceMove     = 0x1
 	spliceNonblock = 0x2
 	spliceMore     = 0x4
+
+	bufSize  = 1 << 20 // max 1M
+	onceRead = bufSize / 4
 )
+
+var pipeSize = &syscall.Flock_t{}
 
 func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	conn.SetReadBuffer(128 << 10)
@@ -28,12 +32,6 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	fileFF := (*linuxFileStub)(unsafe.Pointer(file)).file
 	connFF := (*linuxFileStub)(unsafe.Pointer(conn)).file
 
-	fileFF.fdmu.incref()
-	connFF.fdmu.incref()
-	defer fileFF.fdmu.decref()
-	defer connFF.fdmu.decref()
-
-	//syscall.SetNonblock(fileFF.Sysfd, false)
 	syscall.SetNonblock(fileFF.Sysfd, false)
 
 	// 生成pipe对
@@ -42,44 +40,53 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	defer w.Close()
 	rFF := (*linuxFileStub)(unsafe.Pointer(r)).file
 	wFF := (*linuxFileStub)(unsafe.Pointer(w)).file
-	rFF.fdmu.incref()
-	wFF.fdmu.incref()
-	defer rFF.fdmu.decref()
-	defer wFF.fdmu.decref()
+	fcntl(rFF.Sysfd, syscall.F_SETPIPE_SZ, bufSize)
+	fcntl(wFF.Sysfd, syscall.F_SETPIPE_SZ, bufSize)
 	pdConn := connFF.pd
 	pdFile := fileFF.pd
 
 	for t.cur < t.end {
-		// 如果上次没读到东西确保在数据范围内
-		setDeadlineImpl(connFF, 1*time.Minute, 'r')
-		if err == syscall.EAGAIN {
-			err = pdConn.waitRead(connFF.isFile)
-			if err != nil {
-				return err
-			}
-		}
-		var n int64
+		var buffered int64
 		// 从连接读到pipe
-		n, err = syscall.Splice(connFF.Sysfd, nil, wFF.Sysfd, nil, 1<<20, spliceMove|spliceMore|spliceNonblock)
+		buffered, err = syscall.Splice(connFF.Sysfd, nil, wFF.Sysfd, nil, bufSize, spliceMove|spliceMore|spliceNonblock)
 		if err != nil {
-			switch err {
-			case syscall.EINTR, syscall.EAGAIN:
+			if err == syscall.EAGAIN { // 没读到东西
+				if t.cur >= t.end {
+					return nil
+				}
+				setDeadlineImpl(connFF, 1*time.Minute, 'r')
+				err = pdConn.waitRead(connFF.isFile)
+				if err != nil {
+					return err
+				}
 				continue
-			default:
-				err = pdConn.prepareRead(connFF.isFile)
-				return err
 			}
-		}
-		// 从pipe写到文件
-		for {
-			n, err = syscall.Splice(rFF.Sysfd, nil, fileFF.Sysfd, &t.cur, int(n), spliceMove|spliceMore)
-			if err == nil {
-				break
+			if err == syscall.EINTR {
+				continue
 			}
-			err = pdFile.prepareWrite(fileFF.isFile)
+			// wrap error
+			err = pdConn.prepareRead(connFF.isFile)
 			return err
 		}
-		t.cur += n
+		// 从pipe写到文件
+		for buffered > 0 {
+			var n int64
+			n, err = syscall.Splice(rFF.Sysfd, nil, fileFF.Sysfd, nil, int(buffered), spliceMove|spliceMore)
+			if err == nil {
+				t.cur += n
+				buffered -= n
+				break
+			} else {
+				err = pdFile.prepareWrite(fileFF.isFile)
+				if err != nil {
+					return err
+				}
+				err = pdFile.waitWrite(fileFF.isFile)
+				if err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return
 }
@@ -157,9 +164,8 @@ func setDeadlineImpl(fd *fd, t time.Duration, mode int) {
 	runtime_pollSetDeadline(fd.pd.runtimeCtx, int64(t), mode)
 }
 
-// Return the appropriate closing error based on isFile.
-//go:linkname errClosing internal/poll.errClosing
-func errClosing(isFile bool) error
+//go:linkname fcntl syscall.fcntl
+func fcntl(fd int, cmd int, arg int) (val int, err error)
 
 type fd struct {
 	// Lock sysfd and serialize access to Read and Write methods.
@@ -190,4 +196,11 @@ type fd struct {
 
 	// Whether this is a file rather than a network socket.
 	isFile bool
+}
+
+//go:linkname fdClose internal/poll.(*FD).Close
+func fdClose(fd *fd) error
+
+func (p *fd) Close() error {
+	return fdClose(p)
 }
