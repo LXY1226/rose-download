@@ -1,9 +1,14 @@
 //go:build !linux
-// +build !linux
 
 package main
 
-func (t *DownloadThread) Download(conn *net.TCPConn) (n int, err error) {
+import (
+	"net"
+	"time"
+)
+
+func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
+	var n int
 	conn.SetReadBuffer(64 << 10)
 	buf := make([]byte, 256<<10) // 256K
 	for t.cur < t.end {

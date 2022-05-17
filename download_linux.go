@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package main
 
@@ -19,8 +18,6 @@ const (
 	bufSize  = 1 << 20 // max 1M
 	onceRead = bufSize / 4
 )
-
-var pipeSize = &syscall.Flock_t{}
 
 func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 	conn.SetReadBuffer(128 << 10)
@@ -49,24 +46,21 @@ func (t *DownloadThread) Download(conn *net.TCPConn) (err error) {
 		var buffered int64
 		// 从连接读到pipe
 		buffered, err = syscall.Splice(connFF.Sysfd, nil, wFF.Sysfd, nil, bufSize, spliceMove|spliceMore|spliceNonblock)
-		if err != nil {
-			if err == syscall.EAGAIN { // 没读到东西
-				if t.cur >= t.end {
-					return nil
-				}
-				setDeadlineImpl(connFF, 1*time.Minute, 'r')
-				err = pdConn.waitRead(connFF.isFile)
-				if err != nil {
-					return err
-				}
-				continue
+		if buffered <= 0 {
+			if err != nil && err != syscall.EAGAIN {
+				// wrap error
+				err = pdConn.prepareRead(connFF.isFile)
+				return err
 			}
-			if err == syscall.EINTR {
-				continue
+			if t.cur >= t.end {
+				return nil
 			}
-			// wrap error
-			err = pdConn.prepareRead(connFF.isFile)
-			return err
+			setDeadlineImpl(connFF, 30*time.Second, 'r')
+			err = pdConn.waitRead(connFF.isFile)
+			if err != nil {
+				return err
+			}
+			continue
 		}
 		// 从pipe写到文件
 		for buffered > 0 {

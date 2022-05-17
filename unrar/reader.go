@@ -105,6 +105,9 @@ type FileHeader struct {
 	CreationTime     time.Time // creation time (non-zero if set)
 	AccessTime       time.Time // access time (non-zero if set)
 	Version          int       // file version
+
+	Offset  int64
+	VolName string
 }
 
 // Mode returns an os.FileMode for the file, calculated from the Attributes field.
@@ -279,45 +282,49 @@ func (r *Reader) Read(p []byte) (int, error) {
 }
 
 // Next advances to the next file in the archive.
-func (r *Reader) Next() (*FileHeader, error) {
-	if r.solidr != nil {
+func (rc *ReadCloser) Next() (*FileHeader, error) {
+	if rc.solidr != nil {
 		// solid files must be read fully to update decoder information
-		if _, err := io.Copy(ioutil.Discard, r.solidr); err != nil {
+		if _, err := io.Copy(ioutil.Discard, rc.solidr); err != nil {
 			return nil, err
 		}
 	}
 
-	h, err := r.pr.next() // skip to next file
+	h, err := rc.pr.next() // skip to next file
 	if err != nil {
 		return nil, err
 	}
-	r.solidr = nil
+	h.Offset, _ = rc.v.f.Seek(0, io.SeekCurrent)
+	h.Offset -= int64(rc.v.br.Buffered())
+	//h.Offset = pos
+	h.VolName = rc.v.f.Name()
+	rc.solidr = nil
 
-	br := byteReader(&r.pr) // start with packed file reader
+	br := byteReader(&rc.pr) // start with packed file reader
 
 	// check for encryption
 	if len(h.key) > 0 && len(h.iv) > 0 {
 		br = newAesDecryptReader(br, h.key, h.iv) // decrypt
 	}
-	r.r = br
+	rc.r = br
 	// check for compression
 	if h.decoder != nil {
-		err = r.dr.init(br, h.decoder, h.winSize, !h.solid)
+		err = rc.dr.init(br, h.decoder, h.winSize, !h.solid)
 		if err != nil {
 			return nil, err
 		}
-		r.r = &r.dr
-		if r.pr.r.isSolid() {
-			r.solidr = r.r
+		rc.r = &rc.dr
+		if rc.pr.r.isSolid() {
+			rc.solidr = rc.r
 		}
 	}
 	if h.UnPackedSize >= 0 && !h.UnKnownSize {
 		// Limit reading to UnPackedSize as there may be padding
-		r.r = &limitedReader{r.r, h.UnPackedSize, errShortFile}
+		rc.r = &limitedReader{rc.r, h.UnPackedSize, errShortFile}
 	}
-	r.cksum = h.cksum
-	if r.cksum != nil {
-		r.r = io.TeeReader(r.r, h.cksum) // write file data to checksum as it is read
+	rc.cksum = h.cksum
+	if rc.cksum != nil {
+		rc.r = io.TeeReader(rc.r, h.cksum) // write file data to checksum as it is read
 	}
 	fh := new(FileHeader)
 	*fh = h.FileHeader

@@ -29,6 +29,7 @@ func runProxys(filename string) {
 			log.Println("无效ip：", txt)
 			continue
 		}
+		wg.Add(1)
 		go runProxy(ip, txt)
 	}
 }
@@ -38,7 +39,6 @@ var ErrNext = errors.New("")
 func runProxy(ip net.IP, address string) {
 	addr := &net.TCPAddr{IP: ip, Port: 443}
 	dialer := &sysDialer{network: "tcp", address: address}
-	wg.Add(1)
 	logger := new(log.Logger)
 	logger.SetFlags(log.Flags())
 	logger.SetOutput(log.Writer())
@@ -63,9 +63,7 @@ func runProxy(ip net.IP, address string) {
 			if err == nil {
 				break
 			}
-
 			if err != ErrNext {
-				//logger.Println(err)
 				time.Sleep(30 * time.Second)
 			}
 		}

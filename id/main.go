@@ -10,47 +10,12 @@ import (
 )
 
 func main() {
-	unpackRAR("2108016.part1.rar", `R:/车库/lsp/guomoo/2108016/`)
-	os.Exit(1)
-	//unpackRAR("2108016.part1.rar", `R:/车库/lsp/guomoo/`+prefix+`/`)
-
-	dir, err := os.Open(".")
-	if err != nil {
-		panic(err)
-	}
-	names, err := dir.Readdirnames(0)
-	if err != nil {
-		panic(err)
-	}
-
-	for i := 0; i < len(names); i++ {
-		if !strings.HasSuffix(names[i], ".rar") {
-			continue
-		}
-		archives := make([]string, 0, 16)
-		var prefix string
-		if p := strings.LastIndex(names[i], "part"); p != -1 {
-			prefix = names[i][:p-1]
-			for ; i < len(names); i++ {
-				if !strings.HasPrefix(names[i], prefix) {
-					break
-				}
-				if strings.HasSuffix(names[i], ".stat") {
-					archives = nil // 未下载完成
-					break
-				}
-				archives = append(archives, names[i])
-			}
-		} else {
-			archives = append(archives, names[i])
-			p := strings.IndexByte(names[i], '.')
-			prefix = names[i][:p]
-		}
-		if archives != nil {
-
-		}
-	}
-
+	file := os.Args[1]
+	i := strings.IndexByte(file, '.')
+	dir := `R:/车库/lsp/guomoo/` + file[:i] + `/`
+	println(dir)
+	unpackRAR(os.Args[1], dir)
+	os.Exit(0)
 }
 
 type rarArchives struct {
@@ -133,12 +98,9 @@ type errFile struct {
 }
 
 func unpackRAR(firstFile string, workDir string) {
-	r, err := rar.OpenReader(firstFile, "gmw1024")
+	r, err := rar.OpenReader(firstFile, "123123")
 	if err != nil {
 		panic(err)
 	}
-	err = r.UnpackTo(workDir)
-	if err != nil {
-		panic(err)
-	}
+	r.UnpackTo(workDir)
 }
